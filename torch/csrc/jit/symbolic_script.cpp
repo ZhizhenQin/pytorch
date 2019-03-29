@@ -154,6 +154,13 @@ const std::vector<std::string> functions = {
 
             return torch.var(self, dim, unbiased, keepdim), backward
 
+        def tanh(self):
+            output = torch.tanh(self)
+            def backward(grad_output):
+                return grad_output * (1 - output * output)
+
+            return output, backward
+
         def AD_index_select_backward(grad,
                                      dim: int,
                                      indices,
@@ -166,30 +173,30 @@ const std::vector<std::string> functions = {
             # FIXME: torchscript: torch.zeros(sizes, grad.options())
             return torch.zeros(sizes).to(grad).scatter_(dim, indices, grad)
 
-        def topk(self,
-                 k: int,
-                 dim: int = -1,
-                 largest: bool = True,
-                 sorted: bool = True):
-            result0, result1 = torch.topk(self, k, dim, largest, sorted)
-            self_size = self.size()
-            def backward(grad_output):
-                grad_self = AD_index_select_backward(grad_output, dim, result1, self_size, True)
-                return grad_self, None, None, None, None
+        # def topk(self,
+        #          k: int,
+        #          dim: int = -1,
+        #          largest: bool = True,
+        #          sorted: bool = True):
+        #     result0, result1 = torch.topk(self, k, dim, largest, sorted)
+        #     self_size = self.size()
+        #     def backward(grad_output):
+        #         grad_self = AD_index_select_backward(grad_output, dim, result1, self_size, True)
+        #         return grad_self, None, None, None, None
 
-            return result0, result1, backward
+        #     return result0, result1, backward
 
-        def kthvalue(self,
-                     k: int,
-                     dim: int,
-                     keepdim: bool):
-            result0, result1 = torch.kthvalue(self, k, dim, keepdim)
-            self_size = self.size()
-            def backward(grad_output):
-                grad_self = AD_index_select_backward(grad_output, dim, result1, self_size, keepdim)
-                return grad_self, None, None, None
+        # def kthvalue(self,
+        #              k: int,
+        #              dim: int,
+        #              keepdim: bool):
+        #     result0, result1 = torch.kthvalue(self, k, dim, keepdim)
+        #     self_size = self.size()
+        #     def backward(grad_output):
+        #         grad_self = AD_index_select_backward(grad_output, dim, result1, self_size, keepdim)
+        #         return grad_self, None, None, None
 
-            return result0, result1, backward
+        #     return result0, result1, backward
 
         def AD_mm_backward_self(grad, mat2):
             return grad.mm(mat2.t())
@@ -232,15 +239,16 @@ const std::vector<std::string> functions = {
             grad_input.select(dim, index).copy_(grad)
             return grad_input
 
-        def select(self,
-                   dim: int,
-                   index: int):
-            self_size = self.size()
-            def backward(grad_output):
-                grad_self = AD_select_backward(grad_output, self_size, dim, index)
-                return grad_self, None, None
+        # TODO: fix torch.zeros(sizes, grad.options()) before enabling select, topk, kthvalue
+        # def select(self,
+        #            dim: int,
+        #            index: int):
+        #     self_size = self.size()
+        #     def backward(grad_output):
+        #         grad_self = AD_select_backward(grad_output, self_size, dim, index)
+        #         return grad_self, None, None
 
-            return torch.select(self, dim, index), backward
+        #     return torch.select(self, dim, index), backward
 
         def AD_slice_backward(grad,
                               input_sizes: List[int],
@@ -330,8 +338,63 @@ const std::vector<std::string> functions = {
                 return grad_self, grad_mat2
             return torch.bmm(self, mat2), backward
 
+        def AD_mat_transpose(mat):
+            dim = mat.dim()
+            if dim == 1:
+                out = mat
+            elif dim == 2:
+                out = mat.t()
+            else:
+                dims = rangelist(dim)
+                dims[-1] = dim - 2
+                dims[-2] = dim - 1
+                out = mat.permute(dims)
+            return out
+
+        def AD_matmul_size(mat1, mat2,
+                           out_size: List[int]):
+            dim1 = mat1.dim()
+            dim2 = mat2.dim()
+            dim_out = len(out_size)
+            if dim1 == 0 or dim2 == 0:
+                out = mat1 * mat2
+            elif dim1 + dim2 == dim_out:
+                if dim2 == 1:
+                    target_dim2 = 0
+                else:
+                    target_dim2 = -2
+                out = torch.matmul(mat1.unsqueeze(dim1), mat2.unsqueeze(target_dim2))
+            elif dim_out == dim1 - dim2:
+                out = torch.matmul(mat1, mat2.unsqueeze(dim2)).squeeze(-1)
+            elif dim_out == dim2 - dim1:
+                out = torch.matmul(mat1.unsqueeze(-2), mat2).squeeze(-2)
+            else:
+                out = torch.matmul(mat1, mat2)
+            return out
+
+        def matmul(self, other):
+            def backward(grad_output):
+                self_size = self.size()
+                other_size = other.size()
+                grad_self = AD_matmul_size(grad_output, AD_mat_transpose(other), self_size)._grad_sum_to_size(self_size)
+                grad_other = AD_matmul_size(AD_mat_transpose(self), grad_output, other_size)._grad_sum_to_size(other_size)
+                return grad_self, grad_other
+
+            return torch.matmul(self, other), backward
     )",
     R"(
+        def addcmul(self,
+                    tensor1,
+                    tensor2,
+                    *,
+                    value: float = 1.0):
+            def backward(grad_output):
+                grad = grad_output * value
+                grad_tensor1 = (grad * tensor2)._grad_sum_to_size(tensor1.size())
+                grad_tensor2 = (grad * tensor1)._grad_sum_to_size(tensor2.size())
+                return grad_output._grad_sum_to_size(self.size()), grad_tensor1, grad_tensor2, None
+            return torch.addcmul(self, tensor1, tensor2, value=value), backward
+
         def _dim_arange(like,
                         dim: int):
             def backward(grad_output):
@@ -387,6 +450,24 @@ const std::vector<std::string> functions = {
                 return None, None
 
             return torch.full_like(self, fill_value), backward
+
+        def lerp_0(self,
+                   end,
+                   weight: float):
+            def backward(grad_output):
+                grad_self = (grad_output * (1 - weight))._grad_sum_to_size(self.size())
+                grad_end = (grad_output * weight)._grad_sum_to_size(end.size())
+                return grad_self, grad_end, None
+            return torch.lerp(self, end, weight), backward
+
+        def lerp_1(self,
+                   end,
+                   weight):
+            def backward(grad_output):
+                grad_self = (grad_output * (1 - weight))._grad_sum_to_size(self.size())
+                grad_end = (grad_output * weight)._grad_sum_to_size(end.size())
+                return grad_self, grad_end, None
+            return torch.lerp(self, end, weight), backward
 
         def mul(self, other):
             def backward(grad_output):
@@ -603,6 +684,74 @@ const std::vector<std::string> functions = {
 
             return output, backward
 
+        def layer_norm(input : Tensor,
+                       normalied_shape : List[int],
+                       weight : Optional[Tensor],
+                       bias : Optional[Tensor],
+                       eps : float,
+                       cudnn_enable : bool):
+
+            bn_out, save1, save2, impl_idx = torch._batch_norm_impl_index(
+                input, weight, bias, None, None, True,
+                0.0, eps, cudnn_enable)
+            has_weight = weight is not None
+            has_bias = bias is not None
+
+            bn_out = bn_out.view(input.sizes())
+            if weight is not None and bias is not None:
+                output = bias.addcmul(bn_out, weight)
+            elif weight is not None:
+                output = bn_out.mul(weight)
+            elif bias is not None:
+                output = bn_out.add(bias)
+            else:
+                output = bn_out
+
+            def backward(grad_output):
+                if weight is not None:
+                    grad_output = grad_output * torch.t(weight)
+                    weight = grad_output * torch.t(bn_out)
+
+                grad_output = grad_output.reshape(input.sizes())
+
+                dinput, dweight, dbias = torch._batch_norm_impl_index_backward(
+                    impl_idx, input, grad_output, weight, None, None,
+                    save1, save2, True, eps, [True, has_weight, has_bias])
+                return dinput, None, dweight, dbias, None, None
+
+            return output, backward
+
+        def AD_fused_dropout_backward(grad,
+                                      mask,
+                                      p1m: float):
+            p1r = 1. / p1m
+            grad_input = grad * (mask.type_as(grad) * p1r)
+            return grad_input
+
+        def dropout(input,
+                    p: float,
+                    train: bool):
+            use_cuda = input.is_cuda
+            # lowering is specialized for cuda because cuda fuser can efficiently fuse those operations
+            # for cpu backend, where fusions are disabled, a different lowering that is more efficient
+            # in the absence of fusion is used
+            p1m = 1. - p
+            if use_cuda:
+                mask = torch.rand_like(input) < p1m
+                res = mask.type_as(input) * input * (1./p1m)
+            else:
+                mask = torch.empty_like(input)
+                mask.bernoulli_(p1m)
+                res = mask * input / p1m
+
+            def backward(grad_output):
+                if use_cuda:
+                    grad_input = AD_fused_dropout_backward(grad_output, mask, p1m)
+                else:
+                    grad_input = grad_output * mask / p1m
+                return grad_input, None, None
+            return res, backward
+
         def embedding(weight,
                       indices,
                       padding_idx: int,
@@ -770,6 +919,7 @@ std::string overloadedSchemaString(const FunctionSchema& schema) {
         schema_name.length(),
         schema_name.substr(0, pos));
   }
+
   return schema_string;
 }
 
@@ -818,6 +968,7 @@ void loadModule(const std::shared_ptr<script::Module>& module) {
     const FunctionSchema& loaded_schema = method->getSchema();
     FunctionSchema actual_schema(
         Symbol::aten(loaded_schema.name()),
+        loaded_schema.overload_name(),
         loaded_schema.arguments(),
         {originalReturnType(new_tuple->type()->expect<TupleType>())});
 
@@ -832,7 +983,8 @@ void loadModule(const std::shared_ptr<script::Module>& module) {
 void loadFunctions() {
   for (const std::string& str : functions) {
     auto cu = std::make_shared<script::Module>();
-    script::defineMethodsInModule(cu, str, script::nativeResolver, nullptr);
+    script::defineMethodsInModule(
+        cu, str, script::nativeResolver, c10::nullopt);
     loadModule(cu);
   }
 }
@@ -848,6 +1000,15 @@ c10::optional<GradientPair> gradientInfoForSchema(
     return cache_it->second;
   } else {
     auto schema_str = canonicalSchemaString(schema);
+    // Specialize Scalar to float for the arg type of the node schema
+    // this is used to:
+    // 1. define scalar type as float in TorchScript autodiff formula
+    // 2. to make sure the input of any graph node does not contain scalar type
+    //    in its argument, all scalar arg should already be passed with float
+    //    value since scalar/int aren't differentiable either way.
+    //
+    c10::ReplaceAll(schema_str, "Scalar", "float");
+
     auto sym_script_it = schema_to_graphs.find(schema_str);
 
     if (sym_script_it != schema_to_graphs.end()) {
