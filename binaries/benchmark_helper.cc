@@ -40,6 +40,11 @@ using std::shared_ptr;
 using std::string;
 using std::unique_ptr;
 using std::vector;
+using std::thread;
+using std::chrono::high_resolution_clock;
+using std::chrono::duration;
+using std::chrono::duration_cast;
+using std::ofstream;
 
 void observerConfig() {
   caffe2::ClearGlobalNetObservers();
@@ -278,13 +283,37 @@ void runNetwork(
       iter,
       ".");
   LOG(INFO) << "net runs.";
+
+  high_resolution_clock::time_point start = high_resolution_clock::now();
+  ofstream latencyFile("/data/local/tmp/latency.csv");
+  latencyFile << "Time(s),Latency" << std::endl;
+  ofstream frequencyFile("/data/local/tmp/frequency.csv");
+  frequencyFile << "Time(s),cpu0,cpu1,cpu2,cpu3,cpu4,cpu5,cpu6,cpu7" << std::endl;
+  thread freqLogger = thread(readFrequency,
+                             start,
+                             std::ref(frequencyFile),
+                             100,
+                             555);
+  // void readFrequency(start,
+  //                    latencyFile,
+  //                    FLAGS_interval_in_ms,
+  //                    FLAGS_timeout_in_seconds)
+
   for (int i = 0; i < iter; ++i) {
     caffe2::ObserverConfig::initSampleRate(1, 1, 1, 0, warmup);
     fillInputBlob(workspace, tensor_protos_map, i);
     if (wipe_cache) {
       caffe2::wipe_cache();
     }
+    high_resolution_clock::time_point run_start = high_resolution_clock::now();
     CAFFE_ENFORCE(net->Run(), "Main run ", i, " has failed.");
+    high_resolution_clock::time_point run_end = high_resolution_clock::now();
+    duration<double> run_duration = duration_cast<duration<double>>(run_end - run_start);
+    double run_time = run_duration.count();
+    duration<double> tot_duration = duration_cast<duration<double>>(run_end - start);
+    double tot_time = tot_duration.count();
+    latencyFile << tot_time << "," << run_time << std::endl;
+
     // Write the output for the first num_blobs times
     writeOutput(
         workspace,
@@ -302,6 +331,9 @@ void runNetwork(
           std::chrono::seconds(sleep_between_iteration));
     }
   }
+  latencyFile.close();
+  frequencyFile.close();
+
   if (run_individual) {
     LOG(INFO) << "operator runs.";
     if (sleep_between_net_and_operator > 0) {

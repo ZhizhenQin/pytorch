@@ -24,6 +24,7 @@
 #include "caffe2/core/operator.h"
 #include "caffe2/utils/string_utils.h"
 #include "c10/util/string_utils.h"
+#include "binaries/log_frequency.h"
 
 using std::map;
 using std::shared_ptr;

@@ -88,3 +88,11 @@ C10_DEFINE_bool(
     wipe_cache,
     false,
     "Whether to evict the cache before running network.");
+C10_DEFINE_int(
+    interval_in_ms,
+    100,
+    "The interval of logging in frequency in ms");
+C10_DEFINE_int(
+    timeout_in_seconds,
+    300,
+    "The interval of logging in frequency in ms");

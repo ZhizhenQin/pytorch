@@ -107,8 +107,3 @@ if [ -z "$MAX_JOBS" ]; then
   fi
 fi
 cmake --build . -- "-j${MAX_JOBS}"
-
-# copy headers and libs to install directory
-echo "Will install headers and libs to $INSTALL_PREFIX for further Android project usage."
-make install
-echo "Installation completed, now you can copy the headers/libs from $INSTALL_PREFIX to your Android project directory."

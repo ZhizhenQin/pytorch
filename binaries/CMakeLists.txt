@@ -59,7 +59,8 @@ if (USE_OPENCV)
 endif()
 
 if (USE_OBSERVERS)
-  caffe2_binary_target(caffe2_benchmark "caffe2_benchmark.cc" "benchmark_helper.cc")
+  caffe2_binary_target(caffe2_benchmark "caffe2_benchmark.cc" "log_frequency.cc" "benchmark_helper.cc" )
+
 endif()
 
 if (USE_OBSERVERS AND USE_OPENCV)
